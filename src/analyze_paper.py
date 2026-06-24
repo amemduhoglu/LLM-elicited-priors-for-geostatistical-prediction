@@ -27,12 +27,22 @@ DENS = [10, 25, 50, 100]
 OUTLIER = "gemma4:e2b"  # capability-floor; log-transform exp() blowup on prcp. Reported separately.
 
 
+# The three 2026 proprietary frontier systems. Other API-served ("/") models are the
+# open-weight tier (DeepSeek-V4, Nemotron-3, GLM-5.1), kept distinct so they never inflate
+# the "frontier" aggregate; open-weight stats live in revision_tables.py.
+FRONTIER_IDS = ("claude-opus", "gpt-5.5", "gemini-3.1")
+
+
 def is_frontier(m) -> bool:
-    return isinstance(m, str) and "/" in m
+    return isinstance(m, str) and any(k in m for k in FRONTIER_IDS)
 
 
 def tier(m) -> str:
-    return "frontier" if is_frontier(m) else ("none" if m == "none" or pd.isna(m) else "local")
+    if not isinstance(m, str) or m == "none" or pd.isna(m):
+        return "none"
+    if is_frontier(m):
+        return "frontier"
+    return "openweight" if "/" in m else "local"
 
 
 def load_summary(drop_outlier=True) -> pd.DataFrame:
@@ -44,8 +54,12 @@ def load_summary(drop_outlier=True) -> pd.DataFrame:
     return d
 
 
-def load_cells(drop_outlier=True) -> pd.DataFrame:
+def load_cells(drop_outlier=True, baseline_width=True) -> pd.DataFrame:
     d = pd.read_csv(ROOT / "results" / "cells_long.csv")
+    # The headline tables use the baseline (1x) prior width only; the 2x/3x prior-width
+    # sweep is analysed separately and must not enter the main aggregates or significance.
+    if baseline_width and "width_scale" in d.columns:
+        d = d[d["width_scale"].isna() | (d["width_scale"] == 1.0)]
     d["tier"] = d["elicit_model"].map(tier)
     d["base_model"] = d["elicit_model"].astype(str).str.replace("__v3", "", regex=False)
     if drop_outlier:
@@ -66,7 +80,7 @@ def tbl_prior_quality() -> pd.DataFrame:
             continue
         model = c.get("model", cj.parent.name)
         proto = c.get("prompt_version", "v3" if "__v3" in cj.parent.name else "v2")
-        cons = c.get("consensus", {})
+        cons = c.get("consensus") or {}
         coef = cons.get("coefficients", {})
         # first covariate coefficient
         ck = next(iter(coef), None)

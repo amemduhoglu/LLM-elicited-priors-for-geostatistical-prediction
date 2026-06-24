@@ -211,6 +211,11 @@ def stage_eval(cfg):
         return
     if "dataset" not in ok.columns:
         ok["dataset"] = "pilot"
+    # summary.csv carries the baseline (1x) prior width only; the 2x/3x prior-width sweep
+    # is a separate sensitivity analysis (revision_tables.py reads the full cells_long) and
+    # must not dilute the headline metrics. cells_long.csv above keeps every width.
+    if "width_scale" in ok.columns:
+        ok = ok[ok["width_scale"].isna() | (ok["width_scale"] == 1.0)].copy()
     metric_cols = [c for c in ("rmse", "mae", "crps", "pit_ks", "coverage90",
                                "interval_width") if c in ok.columns]
     grp = (ok.groupby(["dataset", "predictor", "condition", "elicit_model", "density"])[metric_cols]
