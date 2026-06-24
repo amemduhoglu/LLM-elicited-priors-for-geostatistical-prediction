@@ -1,10 +1,10 @@
-"""Experiment driver. Reads config.yaml. Cheapest-first, fully checkpointed:
-every (stage,predictor,condition,model,density,seed,fold) cell writes one JSON row to
-results/cells/ the instant it finishes, and is SKIPPED on a re-run. A kill at any moment
-leaves valid partial results — exactly what an unattended overnight run needs.
+"""Experiment driver. Reads config.yaml. Fully checkpointed: every
+(stage,predictor,condition,model,density,seed,fold) cell writes one JSON row to
+results/cells/ the instant it finishes, and is SKIPPED on a re-run, so an interrupted
+run resumes where it stopped.
 
 Stages:
-  baselines : OK / RK / RF on the pilot, all densities/folds/seeds (no MCMC, fast)
+  baselines : OK / RK / RF on the chosen dataset, all densities/folds/seeds (no MCMC)
   bayes     : bayesian_kriging for --priors conditions (vague needs no LLM; llm_* needs a
               consensus from results/elicit/<model>/consensus.json)
   eval      : aggregate cells -> results/summary.csv + metric-vs-density figures
@@ -73,7 +73,7 @@ def _iter_folds(cfg, coords, density, seed):
         yield fi, keep[tr_s], keep[te_s]
 
 
-def stage_baselines(cfg, budget, which="pilot"):
+def stage_baselines(cfg, which="pilot"):
     bundle = datamod.load_dataset(cfg, which)
     coords = bundle["coords"]
     baselines = [p for p in cfg["predictors"] if p != "bayesian_kriging"]
@@ -86,9 +86,6 @@ def stage_baselines(cfg, budget, which="pilot"):
                                     density=density, seed=seed, fold=fold)
                     if _done(cfg, key):
                         continue
-                    if not budget.ok(30):
-                        print("[baselines] budget exhausted — stopping", flush=True)
-                        return
                     t0 = time.time()
                     row = dict(stage="baselines", dataset=which, predictor=predictor,
                                condition="classical", elicit_model="none",
@@ -115,15 +112,13 @@ def _load_consensus(cfg, model_tag, which="pilot", protocol="v2"):
     return d.get("consensus")
 
 
-def stage_bayes(cfg, budget, conditions, elicit_models, which="pilot", protocol="v2",
-                width_scales=(1.0,), max_cells=None, shard=None):
-    """Returns True if every requested cell is now done, False if this invocation stopped
-    early (budget low, or max_cells reached). max_cells bounds the number of fits performed
-    per process: PyMC/pytensor accumulate ~16 MB per fit, so a long single-process loop
-    balloons to tens of GB; the driver re-invokes after a False so memory resets each batch."""
+def stage_bayes(cfg, conditions, elicit_models, which="pilot", protocol="v2",
+                width_scales=(1.0,)):
+    """Fit bayesian_kriging for every (condition, model, width, density, seed, fold) cell.
+    The model is identical across conditions; only the prior block (priors.build_priors)
+    changes. width_scales>1 inflates the elicited prior sds (overconfidence sweep)."""
     bundle = datamod.load_dataset(cfg, which)
     coords = bundle["coords"]
-    done_this_run = 0
     # width>1 only widens *elicited* sds, so it is meaningless for vague/pc_range — skip them.
     ELICITED = set(priormod.COEF_INFORMED_CONDITIONS) | set(priormod.VARIO_LLM_CONDITIONS)
     for condition in conditions:
@@ -141,7 +136,7 @@ def stage_bayes(cfg, budget, conditions, elicit_models, which="pilot", protocol=
                     print(f"[bayes] no consensus for {model_tag} -> "
                           f"falling back to vague for condition {condition}", flush=True)
             for width_scale in cond_widths:
-              for density in cfg.densities:               # low density first = faster + H1
+              for density in cfg.densities:
                 for seed in cfg.seeds:
                     for fold, tr, te in _iter_folds(cfg, coords, density, seed):
                         eff_cond = condition if (condition in priormod.NO_LLM_CONDITIONS or spec) else "vague_fallback"
@@ -153,16 +148,8 @@ def stage_bayes(cfg, budget, conditions, elicit_models, which="pilot", protocol=
                         if width_scale != 1.0:
                             key_kw["width"] = width_scale
                         key = _cell_key(**key_kw)
-                        # shard filter: collision-free parallelism — each worker owns the cells
-                        # whose key-hash falls in its residue class, so N workers never compute
-                        # the same cell. Applied before _done so every worker skips fast.
-                        if shard is not None and (int(key, 16) % shard[1]) != shard[0]:
-                            continue
                         if _done(cfg, key):
                             continue
-                        if not budget.ok(120):
-                            print("[bayes] budget low — stopping cleanly", flush=True)
-                            return False
                         t0 = time.time()
                         row = dict(stage="bayes", dataset=which, predictor="bayesian_kriging",
                                    condition=condition, elicit_model=model_tag,
@@ -183,12 +170,6 @@ def stage_bayes(cfg, budget, conditions, elicit_models, which="pilot", protocol=
                         _write_cell(cfg, key, row)
                         print(f"[bayes] {condition}/{model_tag} d{density} s{seed} f{fold} "
                               f"w{width_scale} {row['status']} ({row['seconds']}s)", flush=True)
-                        done_this_run += 1
-                        if max_cells is not None and done_this_run >= max_cells:
-                            print(f"[bayes] max_cells={max_cells} reached this process — "
-                                  f"recycling (resume on re-invocation)", flush=True)
-                            return False
-    return True
 
 
 def stage_eval(cfg):
@@ -211,9 +192,8 @@ def stage_eval(cfg):
         return
     if "dataset" not in ok.columns:
         ok["dataset"] = "pilot"
-    # summary.csv carries the baseline (1x) prior width only; the 2x/3x prior-width sweep
-    # is a separate sensitivity analysis (revision_tables.py reads the full cells_long) and
-    # must not dilute the headline metrics. cells_long.csv above keeps every width.
+    # summary.csv carries the baseline (1x) prior width only so the width sweep does not
+    # dilute the headline metrics; cells_long.csv above keeps every width for sensitivity use.
     if "width_scale" in ok.columns:
         ok = ok[ok["width_scale"].isna() | (ok["width_scale"] == 1.0)].copy()
     metric_cols = [c for c in ("rmse", "mae", "crps", "pit_ks", "coverage90",
@@ -263,7 +243,7 @@ def main():
     ap.add_argument("--stage", required=True, choices=["baselines", "bayes", "eval"])
     ap.add_argument("--priors", default="vague,llm_both",
                     help="comma list of conditions for the bayes stage")
-    ap.add_argument("--models", default="local_tonight",
+    ap.add_argument("--models", default="local_small",
                     help="elicitation tier name whose models supply llm_* priors")
     ap.add_argument("--dataset", default="pilot",
                     choices=["pilot", "main", "andes", "prcp", "urban"])
@@ -271,30 +251,18 @@ def main():
     ap.add_argument("--width-scales", default="1",
                     help="comma list of multipliers for elicited prior sds (overconfidence "
                          "sweep); e.g. 1,2,3. width=1 reuses existing cached cells.")
-    ap.add_argument("--max-cells", type=int, default=None,
-                    help="recycle the process after this many fits (bounds PyMC/pytensor "
-                         "memory growth); exits 75 if work remains so the driver re-invokes.")
-    ap.add_argument("--shard", default=None,
-                    help="'i/N': process only cells whose key-hash %% N == i, for collision-free "
-                         "parallel workers (run N processes with i=0..N-1).")
     a = ap.parse_args()
     cfg = cfgmod.load(a.config)
-    budget = cfgmod.Budget(cfg.stop_after_hours)
 
     if a.stage == "baselines":
-        stage_baselines(cfg, budget, a.dataset)
+        stage_baselines(cfg, a.dataset)
     elif a.stage == "bayes":
         conditions = [c.strip() for c in a.priors.split(",") if c.strip()]
         tier = cfg.elicitation.get(a.models, [])
         elicit_models = [m["tag"] for m in tier] if tier else []
         width_scales = tuple(float(w) for w in a.width_scales.split(",") if w.strip())
-        shard = None
-        if a.shard:
-            si, sn = a.shard.split("/"); shard = (int(si), int(sn))
-        complete = stage_bayes(cfg, budget, conditions, elicit_models, a.dataset, a.protocol,
-                               width_scales=width_scales, max_cells=a.max_cells, shard=shard)
-        # exit 75 (EX_TEMPFAIL) = "work remains, re-invoke me"; the driver loops until 0.
-        sys.exit(0 if complete else 75)
+        stage_bayes(cfg, conditions, elicit_models, a.dataset, a.protocol,
+                    width_scales=width_scales)
     elif a.stage == "eval":
         stage_eval(cfg)
 

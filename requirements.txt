@@ -7,15 +7,9 @@ scikit-learn
 pymc
 arviz
 pytensor
-geopandas
-shapely
 pyproj
 verde
 pykrige
-gstools
-scikit-gstat
-scoringrules
-anthropic
+requests
 ollama
-pyarrow
 pyreadr

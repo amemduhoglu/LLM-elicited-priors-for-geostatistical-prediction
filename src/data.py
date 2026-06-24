@@ -1,9 +1,11 @@
 """Load datasets. NO observed values ever leak to elicitation (see elicit.py).
 
-Two datasets:
-  pilot = meuse  (small, dense; pipeline check)
-  main  = ghcnm  (Himalayan annual-mean temperature stations; real, data-sparse)
-Both return the SAME bundle shape so the rest of the pipeline is dataset-agnostic.
+Loaders (selected per dataset via config `name`):
+  meuse     : small, dense floodplain pilot / negative control
+  ghcnm     : GHCN-M v4 annual-mean temperature stations (the temperature networks)
+  ghcn_prcp : GHCN v2 annual precipitation totals (the weak-covariate network)
+Retrieval is included: each loader downloads and caches its source once. All return the
+SAME bundle shape so the rest of the pipeline is dataset-agnostic.
 """
 from __future__ import annotations
 import glob

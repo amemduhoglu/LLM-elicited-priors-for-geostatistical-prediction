@@ -151,23 +151,15 @@ def _normalize_spec(parsed: dict, protocol: str) -> dict | None:
 
 def _call_openrouter(model_id: str, prompt: str, temperature: float, timeout_s: int,
                      provider_pref: dict | None = None) -> str:
-    """Frontier elicitation via OpenRouter. Reasoning effort low + capped max_tokens keep
-    the per-call cost ~flat (thinking tokens bill as output). Falls back without the
-    response_format/reasoning fields for providers that reject them.
-
-    provider_pref: optional OpenRouter `provider` routing block, e.g.
-        {"quantizations": ["bf16"], "allow_fallbacks": False}
-    Used by the precision_control tier to PIN the served quantization (OpenRouter otherwise
-    routes across providers at mixed fp8/bf16/fp4); allow_fallbacks=False makes the call ERROR
-    rather than silently serve a different quant, so the control stays valid."""
+    """Elicitation via OpenRouter (API-served models). Reasoning effort low + capped
+    max_tokens keep the per-call cost roughly flat; the call falls back without the
+    response_format/reasoning fields for providers that reject them. provider_pref is an
+    optional OpenRouter routing block (e.g. to pin the served quantization)."""
     import requests
     key = os.environ.get("OPENROUTER_API_KEY")
     if not key:
         raise RuntimeError("OPENROUTER_API_KEY not set")
-    # 8000 (was 4000): 2026 reasoning models (Nemotron-Super, DeepSeek, GLM) spend output
-    # tokens on hidden CoT even at effort=low; 4000 truncated Super BEFORE it emitted the JSON
-    # (returned bare reasoning prose, HTTP 200 -> not caught by the 400 fallback). 8000 gives
-    # headroom; the JSON answer is ~1k tokens so steady-state cost is unchanged.
+    # headroom for reasoning models that spend output tokens on hidden CoT before the JSON
     base = dict(model=model_id,
                 messages=[{"role": "user", "content": prompt}],
                 temperature=temperature, max_tokens=8000)
@@ -237,12 +229,9 @@ def elicit_model(cfg, entry, which: str = "pilot", protocol: str = DEFAULT_PROTO
     if provider != "ollama":
         retries = min(retries, 1)   # paid calls: 2 attempts max bounds worst-case spend
     call = _call_ollama if provider == "ollama" else _call_openrouter
-    # PIN quantization for the precision_control tier (entry carries `quantization: bf16`):
-    # route only to providers serving that quant, error rather than silently fall back.
+    # optional quantization pin (entry carries `quantization: bf16`): route only to providers
+    # serving that quant, so the same-weights precision control stays valid
     qz = entry.get("quantization")
-    # allow_fallbacks=True keeps the bf16-ONLY filter but may try several bf16 providers, so a
-    # single rate-limited provider (429) doesn't fail the cell; the quant control stays valid
-    # because every candidate is still bf16.
     provider_pref = {"quantizations": [qz], "allow_fallbacks": True} if qz else None
 
     # Idempotent caching: a phrasing that already succeeded (status "ok") is reused
@@ -338,7 +327,7 @@ def run_tier(cfg, tier: str, which: str = "pilot", protocol: str = DEFAULT_PROTO
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--config", default="config.yaml")
-    ap.add_argument("--tier", default="local_tonight")
+    ap.add_argument("--tier", default="local_small")
     ap.add_argument("--dataset", default="pilot",
                     choices=["pilot", "main", "andes", "prcp", "urban"])
     ap.add_argument("--protocol", default=DEFAULT_PROTOCOL, choices=list(PROTOCOLS))

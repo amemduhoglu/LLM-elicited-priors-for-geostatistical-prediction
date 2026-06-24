@@ -1,6 +1,6 @@
 # LLM-elicited priors for geostatistical prediction
 
-Analysis code for the study on whether priors elicited from large language models
+Methodology code for the study on whether priors elicited from large language models
 (LLMs) improve Bayesian geostatistical prediction in data-sparse regions, compared
 with the same model under vague priors and with classical kriging.
 
@@ -22,15 +22,16 @@ src/
   metrics.py           RMSE / MAE / CRPS / PIT / interval coverage
   run.py               experiment driver (reads config.yaml)
   sim.py               known-truth range-misspecification simulation
-  analyze_paper.py     result tables
-  figures_pro.py       publication figure generator
-  convergence_check.py / cost_table.py / report_extras.py / revision_tables.py
-                       auxiliary result/diagnostic tables
 prompts/               versioned elicitation templates (elicit_v1..v3)
 config.yaml            single source of truth: datasets, density levels, seeds,
-                       prior conditions, models, run order
+                       prior conditions, model tiers
 requirements.txt       Python dependencies
 ```
+
+This repository is the methodology pipeline only: data retrieval, elicitation, the
+prior-conditioned Bayesian model, spatial cross-validation, metrics, and the known-truth
+simulation. The `eval` stage writes `results/summary.csv` and basic metric-vs-density
+plots; the figures and tables in the paper are produced separately and are not included.
 
 ## Reproducibility
 
@@ -59,12 +60,8 @@ python src/elicit.py --config config.yaml --tier <tier>
 # 3. fit the Bayesian model under each prior condition (model held identical)
 python src/run.py    --config config.yaml --stage bayes --priors vague,llm_both
 
-# 4. evaluate: metrics vs. density for all conditions
+# 4. evaluate: metrics vs. density for all conditions (writes results/summary.csv)
 python src/run.py    --config config.yaml --stage eval
-
-# tables and figures
-python src/analyze_paper.py
-python src/figures_pro.py all
 ```
 
 Stages are independent and checkpointed per cell, so an interrupted run resumes where it

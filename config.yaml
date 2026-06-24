@@ -110,7 +110,7 @@ experiment:
   density_levels: [10, 25, 50, 100] # % of observations retained
   spatial_cv: {kind: blocked_kfold, k: 5}   # spatial blocked CV only; never random CV
   prior_conditions:
-    tonight: [vague, llm_both]
+    minimal: [vague, llm_both]
     full:    [vague, llm_coef, llm_variogram, llm_both, pc_range, hybrid]
     # pc_range: principled PC-prior range baseline (LLM-free, runs like vague).
     # hybrid: LLM coefficient prior combined with the PC-prior range.
@@ -120,15 +120,15 @@ experiment:
 metrics: [rmse, mae, crps, pit, coverage90, interval_width]
 
 # ---- Models that ELICIT priors ----
-# Local Ollama tiers, ordered smallest-first; larger sizes spill to CPU/RAM.
+# Local Ollama tiers, ordered smallest-first.
 elicitation:
   temperature: 0.2                  # low; resampled across phrasings for the robustness check
   phrasings: 5                      # robustness/sensitivity probe
   leakage_guard: true               # prompt uses description + covariate names + region + units only
-  request_timeout_s: 600            # generous, so large CPU-spilling models finish
+  request_timeout_s: 600            # generous timeout for large local models
   max_retries: 2
 
-  local_tonight:                    # minimal local tier
+  local_small:                      # smallest local tier
     - {family: qwen, tag: "qwen3.5:4b", role: small}
   local_sweep:                      # size ablation
     - {family: qwen, tag: "qwen3.5:9b",      role: medium}
@@ -199,14 +199,3 @@ elicitation:
 
 # ---- Predictive models (NOT language models) ----
 predictors: [ordinary_kriging, regression_kriging, bayesian_kriging, rf_residual_kriging]
-
-# ---- Overnight run order (cheapest-first; a partial run is still a valid pilot) ----
-overnight:
-  stop_after_hours: 9
-  stages:
-    - baselines         # OK/RK/RF on pilot, all densities/folds/seeds; fast, no MCMC
-    - elicit_local      # local_tonight priors (qwen3.5:4b)
-    - bayes_pilot       # vague + llm_both on pilot: the core result
-    - eval              # metrics + figures
-    - elicit_sweep      # queued: qwen 9b/27b/35b priors
-    - bayes_sweep       # queued: llm_both for the swept models

@@ -1,7 +1,6 @@
 """Load and validate config.yaml — the single source of truth."""
 from __future__ import annotations
 import os
-import time
 from pathlib import Path
 import yaml
 
@@ -58,10 +57,6 @@ class Config:
     def elicitation(self):
         return self._d["elicitation"]
 
-    @property
-    def stop_after_hours(self):
-        return float(self._d.get("overnight", {}).get("stop_after_hours", 9))
-
 
 def load(path: str | os.PathLike = "config.yaml") -> Config:
     p = Path(path)
@@ -81,19 +76,3 @@ def _validate(d: dict):
         assert k in pilot, f"config: pilot.{k} missing"
     assert d["experiment"]["spatial_cv"]["kind"] != "random", "RANDOM CV FORBIDDEN (autocorr leak)"
     assert "elicitation" in d, "config: elicitation missing"
-
-
-class Budget:
-    """Wall-clock guard so the overnight run self-limits."""
-
-    def __init__(self, hours: float):
-        # A shared GLOBAL_DEADLINE (epoch seconds) set by run_overnight.sh enforces ONE cap
-        # across all stages; otherwise each invocation gets its own `hours` budget.
-        env = os.environ.get("GLOBAL_DEADLINE")
-        self.deadline = float(env) if env else time.time() + hours * 3600
-
-    def remaining_s(self) -> float:
-        return self.deadline - time.time()
-
-    def ok(self, need_s: float = 0.0) -> bool:
-        return self.remaining_s() > need_s

@@ -9,9 +9,8 @@ For each replicate we fit the same Bayesian model under
 Held-out RMSE/CRPS/coverage vs r gives the misspecification curve; in the analysis the
 elicited prior of every LLM is then placed on that curve via its (elicited range / fitted
 range) ratio. Converts the empirical "variogram priors hurt" finding into a quantitative
-mechanism.
+mechanism. Checkpointed per cell.
 
-Run later on geos (CPU): ~3 n-levels x 10 conditions x 12 reps ~ 360 fits, checkpointed.
   python src/sim.py --config config.yaml
 """
 from __future__ import annotations
@@ -88,7 +87,6 @@ def main():
     ap.add_argument("--config", default="config.yaml")
     a = ap.parse_args()
     cfg = cfgmod.load(a.config)
-    budget = cfgmod.Budget(cfg.stop_after_hours)
     cells = cfg.output_dir / "sim" / "cells"
     cells.mkdir(parents=True, exist_ok=True)
 
@@ -104,9 +102,6 @@ def main():
                 out = cells / f"{key}.json"
                 if out.exists():
                     continue
-                if not budget.ok(120):
-                    print("[sim] budget exhausted — stopping", flush=True)
-                    return
                 t0 = time.time()
                 row = dict(n_obs=n_obs, rep=rep, condition=kind, ratio=ratio,
                            true_range=TRUE_RANGE, prior_log_sd=PRIOR_LOG_SD)
